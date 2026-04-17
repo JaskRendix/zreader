@@ -28,9 +28,5 @@ dist/
 .DS_Store
 Thumbs.db
 
-# Local data and generated fixtures
-tests/data/*.zst
-tests/data/*.ndjson
-
 # Docker
 *.log
