@@ -1,0 +1,36 @@
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Test cache
+.pytest_cache/
+
+# MyPy
+.mypy_cache/
+.dmypy.json
+
+# Editors
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local data and generated fixtures
+tests/data/*.zst
+tests/data/*.ndjson
+
+# Docker
+*.log

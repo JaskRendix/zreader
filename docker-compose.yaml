@@ -1,0 +1,18 @@
+version: "3.9"
+
+services:
+  zreader:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: zreader-service
+    environment:
+      ZREADER_CHUNK_SIZE: 16384
+      ZREADER_MAX_QUEUE_SIZE: 8
+      ZREADER_MAX_UPLOAD_MB: 512
+      ZREADER_LOG_LEVEL: INFO
+      ZREADER_SERVICE_NAME: zreader-service
+      ZREADER_VERSION: "1.0.0"
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
