@@ -14,6 +14,7 @@ from app.api.stream import router as stream_router
 from app.api.transform import router as transform_router
 from app.api.upload import router as upload_router
 from app.config import settings
+from app.services.stats_service import StatsService
 
 
 def _configure_logging() -> None:
@@ -26,15 +27,8 @@ def _configure_logging() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """
-    Application lifespan handler.
-
-    Startup and shutdown logic goes here — open connection pools, warm
-    caches, close resources cleanly. Using lifespan instead of
-    @app.on_event (deprecated since FastAPI 0.93) avoids the startup/
-    shutdown split and guarantees teardown even if startup partially fails.
-    """
     _configure_logging()
+    app.state.stats = StatsService()
     logging.getLogger(__name__).info(
         "Starting %s v%s (log_level=%s)",
         settings.service_name,
@@ -42,7 +36,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         settings.log_level,
     )
 
-    yield  # application runs here
+    yield
 
     logging.getLogger(__name__).info("Shutting down %s", settings.service_name)
 
@@ -55,8 +49,6 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # Routers registered in a consistent, logical order:
-    # infrastructure first, then data-path endpoints.
     app.include_router(health_router)
     app.include_router(stats_router)
     app.include_router(upload_router)

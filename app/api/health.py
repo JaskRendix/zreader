@@ -2,16 +2,23 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
+from app.config import settings
+
 router = APIRouter()
 
 
 @router.get("/health", summary="Health check")
-async def health_check():
+async def health_check() -> dict[str, str]:
     """
-    Lightweight health endpoint for readiness/liveness probes.
+    Basic readiness/liveness endpoint.
+
+    Returns:
+        - static service status
+        - service name from settings
+        - version from settings
     """
     return {
         "status": "ok",
-        "service": "zreader-service",
-        "message": "healthy",
+        "service": settings.service_name,
+        "version": settings.version,
     }

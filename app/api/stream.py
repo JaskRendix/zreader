@@ -3,19 +3,17 @@ from __future__ import annotations
 from typing import AsyncIterator
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from starlette.websockets import WebSocketState
 
+from app.config import settings
 from app.services.stream_service import StreamService
 
 router = APIRouter()
 
 
 async def _iter_websocket_bytes(
-    ws: WebSocket, chunk_size: int = 16384
+    ws: WebSocket,
 ) -> AsyncIterator[bytes]:
-    """
-    Convert incoming WebSocket binary messages into an async byte stream.
-    Each message is treated as a chunk of the compressed .zst file.
-    """
     try:
         while True:
             data = await ws.receive_bytes()
@@ -26,21 +24,21 @@ async def _iter_websocket_bytes(
 
 
 @router.websocket("/stream")
-async def stream_zst(ws: WebSocket):
-    """
-    WebSocket endpoint for streaming .zst-compressed NDJSON.
-    Client sends binary chunks; server streams decompressed NDJSON lines.
-    """
-
+async def stream_zst(ws: WebSocket) -> None:
     await ws.accept()
-    service = StreamService()
+    service = StreamService(chunk_size=settings.chunk_size)
 
     try:
         byte_stream = _iter_websocket_bytes(ws)
-
         async for line in service.process_as_ndjson(byte_stream):
+            if ws.client_state != WebSocketState.CONNECTED:
+                break
             await ws.send_text(line)
-
     except WebSocketDisconnect:
-        # Client disconnected; nothing to clean up
         return
+    except Exception as exc:
+        if ws.client_state == WebSocketState.CONNECTED:
+            await ws.send_text(f'{{"error": "{exc}"}}')
+    finally:
+        if ws.client_state == WebSocketState.CONNECTED:
+            await ws.close()
