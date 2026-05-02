@@ -7,17 +7,14 @@ from fastapi import Request
 
 class AsyncByteStream:
     """
-    Wraps an async byte source (e.g., FastAPI Request.stream())
-    into a clean, typed async iterator of bytes.
+    Wraps a FastAPI Request into a clean async iterator of raw bytes.
+
+    Note: chunk sizes are controlled by the ASGI server / client; the
+    chunk_size parameter here has no effect and is intentionally removed.
     """
 
-    def __init__(
-        self,
-        request: Request,
-        chunk_size: int = 16384,
-    ) -> None:
+    def __init__(self, request: Request) -> None:
         self.request = request
-        self.chunk_size = chunk_size
 
     async def __aiter__(self) -> AsyncIterator[bytes]:
         async for chunk in self.request.stream():
@@ -30,7 +27,7 @@ async def iter_bytes_from_file(
     chunk_size: int = 16384,
 ) -> AsyncIterator[bytes]:
     """
-    Async generator that yields bytes from a local file.
+    Async generator that yields bytes from a local file in fixed-size chunks.
     Useful for tests, benchmarks, and offline processing.
     """
     import aiofiles
@@ -45,19 +42,26 @@ async def iter_bytes_from_file(
 
 class NDJSONStream:
     """
-    Splits incoming decompressed bytes into NDJSON lines.
+    Splits a stream of decompressed *text* chunks into individual NDJSON lines.
+
+    Expects AsyncIterator[str] — i.e. the output of
+    AsyncZstdDecompressor.decompress_stream — not raw bytes.
     """
 
-    async def iter_lines(self, chunks: AsyncIterator[bytes]) -> AsyncIterator[str]:
+    async def iter_lines(self, chunks: AsyncIterator[str]) -> AsyncIterator[str]:
+        """
+        Yield one complete NDJSON line per iteration.
+        Trailing content with no terminating newline is also yielded.
+        Blank lines are skipped.
+        """
         buffer = ""
-
         async for chunk in chunks:
-            buffer += chunk.decode()
-
+            buffer += chunk
             while "\n" in buffer:
                 line, buffer = buffer.split("\n", 1)
                 if line.strip():
                     yield line
 
+        # Yield any remainder that had no terminating newline.
         if buffer.strip():
             yield buffer
