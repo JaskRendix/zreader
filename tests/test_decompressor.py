@@ -29,7 +29,6 @@ async def test_decompress_stream_single_chunk():
 
 @pytest.mark.asyncio
 async def test_decompress_stream_multiple_input_chunks():
-    """Compressed bytes split across multiple input chunks reassemble correctly."""
     raw = b"abcdefghij"
     comp = compress(raw)
     d = AsyncZstdDecompressor(chunk_size=3)
@@ -41,7 +40,6 @@ async def test_decompress_stream_multiple_input_chunks():
 
 @pytest.mark.asyncio
 async def test_decompress_stream_many_small_input_chunks():
-    """Input split into many small chunks (7 bytes each) still reassembles."""
     raw = b"abcdefghijklmnopqrstuvwxyz"
     comp = compress(raw)
     chunks = [comp[i : i + 7] for i in range(0, len(comp), 7)]
@@ -54,7 +52,6 @@ async def test_decompress_stream_many_small_input_chunks():
 
 @pytest.mark.asyncio
 async def test_decompress_stream_chunk_size_larger_than_data():
-    """chunk_size bigger than the decompressed output: everything comes out in one yield."""
     raw = b"short"
     comp = compress(raw)
     d = AsyncZstdDecompressor(chunk_size=65536)
@@ -75,7 +72,6 @@ async def test_decompress_stream_empty_input():
 
 @pytest.mark.asyncio
 async def test_decompress_stream_skips_empty_chunks():
-    """Empty byte strings interspersed in the stream are ignored."""
     raw = b"hello"
     comp = compress(raw)
     d = AsyncZstdDecompressor()
@@ -87,7 +83,6 @@ async def test_decompress_stream_skips_empty_chunks():
 
 @pytest.mark.asyncio
 async def test_decompress_stream_large_payload():
-    """A payload larger than chunk_size is split and fully reassembled."""
     raw = ("x" * 100_000).encode()
     comp = compress(raw)
     d = AsyncZstdDecompressor(chunk_size=1024)
@@ -99,7 +94,6 @@ async def test_decompress_stream_large_payload():
 
 @pytest.mark.asyncio
 async def test_decompress_stream_invalid_data_raises():
-    """Feeding garbage bytes raises an exception from the zstd layer."""
     d = AsyncZstdDecompressor()
     with pytest.raises(Exception):
         async for _ in d.decompress_stream(make_stream([b"not zstd data"])):
@@ -119,7 +113,6 @@ async def test_decompress_lines_basic():
 
 @pytest.mark.asyncio
 async def test_decompress_lines_no_trailing_newline():
-    """A final line with no terminating newline is still yielded."""
     raw = b"one\ntwo\nthree"
     comp = compress(raw)
     d = AsyncZstdDecompressor()
@@ -174,7 +167,6 @@ async def test_decompress_lines_many_lines():
 
 @pytest.mark.asyncio
 async def test_decompress_lines_blank_lines_are_yielded():
-    """Blank lines in the source are passed through as empty strings."""
     raw = b"a\n\nb\n"
     comp = compress(raw)
     d = AsyncZstdDecompressor()
@@ -186,7 +178,6 @@ async def test_decompress_lines_blank_lines_are_yielded():
 
 @pytest.mark.asyncio
 async def test_decompress_lines_unicode():
-    """Non-ASCII content is decoded correctly."""
     raw = "héllo\nwörld\n".encode("utf-8")
     comp = compress(raw)
     d = AsyncZstdDecompressor()
@@ -198,7 +189,6 @@ async def test_decompress_lines_unicode():
 
 @pytest.mark.asyncio
 async def test_decompress_lines_unicode_split_across_chunks():
-    """A multi-byte UTF-8 character split across compressed input chunks decodes correctly."""
     raw = ("café\n" * 50).encode("utf-8")
     comp = compress(raw)
     # Split compressed bytes into small pieces to stress the boundary handling.

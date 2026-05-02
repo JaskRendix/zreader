@@ -20,7 +20,6 @@ def write_zst(path, records: list[dict]) -> None:
 
 @pytest.mark.asyncio
 async def test_process_file_reads_sample_zst():
-    """Reads the shared fixture and returns the expected number of records."""
     fs = FileService(chunk_size=8192)
     objs = []
     async for obj in fs.process_file("tests/data/sample.zst"):
@@ -72,7 +71,6 @@ async def test_process_file_many_records(tmp_path):
 
 @pytest.mark.asyncio
 async def test_process_file_preserves_types(tmp_path):
-    """JSON types (int, float, bool, null, list, dict) survive the round-trip."""
     record = {
         "int": 1,
         "float": 3.14,
@@ -113,7 +111,6 @@ async def test_process_file_as_ndjson_reads_sample_zst():
 
 @pytest.mark.asyncio
 async def test_process_file_as_ndjson_valid_json_lines(tmp_path):
-    """Every yielded line must be valid JSON."""
     records = [{"id": i, "name": f"item{i}"} for i in range(10)]
     p = tmp_path / "data.zst"
     write_zst(p, records)
@@ -130,7 +127,6 @@ async def test_process_file_as_ndjson_valid_json_lines(tmp_path):
 
 @pytest.mark.asyncio
 async def test_process_file_as_ndjson_no_trailing_newline(tmp_path):
-    """Yielded lines must not contain a newline character."""
     p = tmp_path / "data.zst"
     write_zst(p, [{"a": 1}])
 
@@ -141,7 +137,6 @@ async def test_process_file_as_ndjson_no_trailing_newline(tmp_path):
 
 @pytest.mark.asyncio
 async def test_iter_file_bytes_chunk_boundary(tmp_path):
-    """File content is split into exactly chunk_size pieces."""
     p = tmp_path / "x.bin"
     p.write_bytes(b"abcdef")
     fs = FileService(chunk_size=2)

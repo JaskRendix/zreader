@@ -28,7 +28,6 @@ async def test_iter_lines_splits_basic():
 
 @pytest.mark.asyncio
 async def test_iter_lines_partial_final_line():
-    """Content with no trailing newline: last line is still yielded."""
     stream = NDJSONStream()
     out = []
     async for line in stream.iter_lines(str_chunks('{"a":1}\n{"b":2}\n{"c":3}')):
@@ -83,7 +82,6 @@ async def test_iter_lines_empty_input():
 
 @pytest.mark.asyncio
 async def test_iter_lines_only_newlines():
-    """A stream of only newlines yields nothing."""
     stream = NDJSONStream()
     out = []
     async for line in stream.iter_lines(str_chunks("\n\n\n")):
@@ -93,7 +91,6 @@ async def test_iter_lines_only_newlines():
 
 @pytest.mark.asyncio
 async def test_iter_lines_split_across_many_chunks():
-    """A single JSON object split across many one-character chunks."""
     stream = NDJSONStream()
     payload = '{"key":"value"}\n'
     out = []
@@ -115,7 +112,6 @@ async def test_iter_lines_many_lines():
 
 @pytest.mark.asyncio
 async def test_iter_lines_whitespace_only_lines_ignored():
-    """Lines containing only spaces or tabs are treated as blank and skipped."""
     stream = NDJSONStream()
     out = []
     async for line in stream.iter_lines(str_chunks('{"a":1}\n   \n{"b":2}\n')):
@@ -172,7 +168,6 @@ async def test_async_byte_stream_empty_request():
 
 @pytest.mark.asyncio
 async def test_async_byte_stream_all_empty_chunks():
-    """A stream that yields only empty bytes produces nothing."""
     s = AsyncByteStream(FakeRequest([b"", b"", b""]))
     out = []
     async for chunk in s:
