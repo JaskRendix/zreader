@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import pytest
 
 from app.core.ndjson_stream import AsyncByteStream, NDJSONStream, iter_bytes_from_file
