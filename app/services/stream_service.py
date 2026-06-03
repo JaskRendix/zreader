@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any, AsyncIterator
 
@@ -8,30 +7,26 @@ import orjson
 
 from app.core.decompressor import AsyncZstdDecompressor
 from app.core.filters import NDJSONFilter
-from app.core.ndjson_stream import NDJSONStream, iter_bytes_from_file
+from app.core.ndjson_stream import iter_bytes_from_file
 from app.core.transformers import NDJSONTransformer
-from app.core.validators import NDJSONValidator
+from app.core.validators import NDJSONValidator, ValidationStats
 
 logger = logging.getLogger(__name__)
 
 
 class StreamService:
     """
-    High-level orchestrator for the NDJSON processing pipeline:
-      compressed bytes → decompressed text → line splitting → validation
-      → filtering → transformation → output
+    High-level orchestrator for the NDJSON processing pipeline.
 
-    Parameters
-    ----------
-    chunk_size:
-        Decompression buffer size in bytes.
-    validator:
-        NDJSONValidator instance. Defaults to a permissive validator that
-        accepts any JSON object.
-    filters:
-        NDJSONFilter instance. Defaults to no filters (pass-through).
-    transformers:
-        NDJSONTransformer instance. Defaults to no transforms (pass-through).
+    Pipeline:
+        compressed bytes
+            → decompressed UTF‑8 lines
+            → validated JSON objects
+            → filtered objects
+            → transformed objects
+            → output dicts or NDJSON strings
+
+    All stages are async generators and fully streaming.
     """
 
     def __init__(
@@ -43,34 +38,40 @@ class StreamService:
         transformers: NDJSONTransformer | None = None,
     ) -> None:
         self.decompressor = AsyncZstdDecompressor(chunk_size=chunk_size)
-        self.line_splitter = NDJSONStream()
         self.validator = validator or NDJSONValidator()
         self.filters = filters or NDJSONFilter()
         self.transformers = transformers or NDJSONTransformer()
 
-    async def process(
+    async def process_stream(
         self,
         byte_stream: AsyncIterator[bytes],
+        stats: ValidationStats | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """
-        Full pipeline: compressed bytes → validated, filtered, transformed dicts.
+        Run the full NDJSON pipeline on an async byte stream.
 
-        Steps
-        -----
-        1. Decompress .zst chunks into text chunks (AsyncZstdDecompressor).
-        2. Split text chunks into individual NDJSON lines (NDJSONStream).
-        3. Validate each line with Pydantic (NDJSONValidator).
-        4. Apply filter predicates (NDJSONFilter).
-        5. Apply transform functions (NDJSONTransformer).
+        Parameters
+        ----------
+        byte_stream:
+            Async iterator yielding compressed .zst byte chunks.
+        stats:
+            Optional ValidationStats instance for per-request metric isolation.
+
+        Yields
+        ------
+        dict[str, Any]
+            Validated, filtered, transformed JSON objects.
         """
-        # Step 1+2: decompress then split into lines.
-        # decompress_stream yields str chunks; NDJSONStream.iter_lines consumes them.
-        text_chunks = self.decompressor.decompress_stream(byte_stream)
-        lines = self.line_splitter.iter_lines(text_chunks)
+        # Step 1–2: decompress and yield UTF‑8 lines
+        lines = self.decompressor.decompress_lines(byte_stream)
 
-        # Step 3–5: validate → filter → transform, all lazy async generators.
-        validated = self.validator.validate_stream(lines)
+        # Step 3: validate with optional per-request stats
+        validated = self.validator.validate_stream(lines, stats=stats)
+
+        # Step 4: apply filters
         filtered = self.filters.filter_stream(validated)
+
+        # Step 5: apply transformations
         transformed = self.transformers.apply_stream(filtered)
 
         async for obj in transformed:
@@ -79,28 +80,44 @@ class StreamService:
     async def process_as_ndjson(
         self,
         byte_stream: AsyncIterator[bytes],
+        stats: ValidationStats | None = None,
     ) -> AsyncIterator[str]:
         """
-        Same as process(), but yields compact serialised NDJSON lines.
+        Same as process_stream(), but yields compact NDJSON strings
+        WITHOUT a trailing newline. Tests explicitly require this behavior.
         """
-        async for obj in self.process(byte_stream):
-            yield self._to_ndjson(obj)
+        async for obj in self.process_stream(byte_stream, stats=stats):
+            yield orjson.dumps(obj).decode("utf-8")
 
     async def process_file(
         self,
         path: str,
+        stats: ValidationStats | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """
         Convenience wrapper: read a local .zst file and run the full pipeline.
-
-        Prefer FileService.process_file() from the API layer; this method
-        exists for quick scripting and tests.
         """
         byte_stream = iter_bytes_from_file(path)
-        async for obj in self.process(byte_stream):
+        async for obj in self.process_stream(byte_stream, stats=stats):
             yield obj
+
+    async def process_file_as_ndjson(
+        self,
+        path: str,
+        stats: ValidationStats | None = None,
+    ) -> AsyncIterator[str]:
+        """
+        Same as process_file(), but yields NDJSON strings WITHOUT a trailing newline.
+        """
+        byte_stream = iter_bytes_from_file(path)
+        async for obj in self.process_stream(byte_stream, stats=stats):
+            yield orjson.dumps(obj).decode("utf-8")
 
     @staticmethod
     def _to_ndjson(obj: dict[str, Any]) -> str:
-        """Serialise a dict to a compact NDJSON line using orjson."""
-        return orjson.dumps(obj).decode("utf-8")
+        """
+        Serialize a dict to a compact NDJSON line WITH a trailing newline.
+
+        This is used for streaming API responses, not for file-based NDJSON.
+        """
+        return orjson.dumps(obj).decode("utf-8") + "\n"
