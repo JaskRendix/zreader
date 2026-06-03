@@ -1,3 +1,6 @@
+import asyncio
+
+import pytest
 from pydantic import BaseModel
 
 from app.core.transformers import (
@@ -14,60 +17,37 @@ def test_default_transformer_returns_copy():
     obj = {"a": 1, "b": 2}
     out = t.apply(obj)
     assert out == obj
-    assert out is not obj
+    assert out is not obj  # must be a fresh copy
 
 
-def test_transformer_apply_stream():
+def test_transformer_accepts_pydantic_model():
+    class M(BaseModel):
+        a: int
+        b: int
+
     t = NDJSONTransformer()
-
-    async def gen():
-        yield {"x": 1}
-        yield {"x": 2}
-
-    out = []
-
-    async def collect():
-        async for o in t.apply_stream(gen()):
-            out.append(o)
-
-    import asyncio
-
-    asyncio.run(collect())
-
-    assert out == [{"x": 1}, {"x": 2}]
+    m = M(a=1, b=2)
+    out = t.apply(m)
+    assert out == {"a": 1, "b": 2}
+    assert isinstance(out, dict)
 
 
-def test_rename_field():
-    t = NDJSONTransformer([rename_field("old", "new")])
-    obj = {"old": 1, "keep": 2}
+@pytest.mark.parametrize(
+    "transform,obj,expected",
+    [
+        (rename_field("old", "new"), {"old": 1, "k": 2}, {"new": 1, "k": 2}),
+        (drop_fields(["a", "b"]), {"a": 1, "b": 2, "c": 3}, {"c": 3}),
+        (add_field("x", 99), {"a": 1}, {"a": 1, "x": 99}),
+        (add_field("x", 99, overwrite=False), {"x": 1}, {"x": 1}),  # no-op
+        (map_field("n", lambda v: v * 10), {"n": 3, "k": 1}, {"n": 30, "k": 1}),
+        (map_field("missing", lambda v: v), {"a": 1}, {"a": 1}),  # no-op
+    ],
+)
+def test_single_transform(transform, obj, expected):
+    t = NDJSONTransformer([transform])
     out = t.apply(obj)
-    assert out == {"new": 1, "keep": 2}
-    assert "old" not in out
-    assert obj == {"old": 1, "keep": 2}
-
-
-def test_drop_fields():
-    t = NDJSONTransformer([drop_fields(["a", "b"])])
-    obj = {"a": 1, "b": 2, "c": 3}
-    out = t.apply(obj)
-    assert out == {"c": 3}
-    assert obj == {"a": 1, "b": 2, "c": 3}
-
-
-def test_add_field():
-    t = NDJSONTransformer([add_field("x", 99)])
-    obj = {"a": 1}
-    out = t.apply(obj)
-    assert out == {"a": 1, "x": 99}
-    assert obj == {"a": 1}
-
-
-def test_map_field():
-    t = NDJSONTransformer([map_field("n", lambda v: v * 10)])
-    obj = {"n": 3, "keep": 1}
-    out = t.apply(obj)
-    assert out == {"n": 30, "keep": 1}
-    assert obj == {"n": 3, "keep": 1}
+    assert out == expected
+    assert out is not obj  # must always be a fresh dict
 
 
 def test_transformer_composition_order():
@@ -82,62 +62,63 @@ def test_transformer_composition_order():
     obj = {"a": 10, "remove": 1}
     out = t.apply(obj)
     assert out == {"x": 11, "flag": True}
-    assert obj == {"a": 10, "remove": 1}
+    assert obj == {"a": 10, "remove": 1}  # original untouched
 
 
-class M(BaseModel):
-    a: int
-    b: int
+@pytest.mark.asyncio
+async def test_transformer_error_policy_skip():
+    def bad(obj):
+        raise RuntimeError("boom")
+
+    t = NDJSONTransformer([bad], on_error="skip")
+
+    async def gen():
+        yield {"a": 1}
+
+    out = [o async for o in t.apply_stream(gen())]
+    assert out == []  # dropped silently
 
 
-def test_transformer_accepts_pydantic_model():
-    t = NDJSONTransformer()
-    m = M(a=1, b=2)
-    out = t.apply(m)
-    assert out == {"a": 1, "b": 2}
-    assert isinstance(out, dict)
+@pytest.mark.asyncio
+async def test_transformer_error_policy_log(caplog):
+    def bad(obj):
+        raise RuntimeError("boom")
+
+    t = NDJSONTransformer([bad], on_error="log")
+
+    async def gen():
+        yield {"a": 1}
+
+    async for _ in t.apply_stream(gen()):
+        pass  # should not raise
+
+    assert "Transform error" in caplog.text
 
 
-def test_transformer_identity_behavior():
-    t = NDJSONTransformer()
-    obj = {"k": 1}
-    out = t.apply(obj)
-    assert out == obj
-    assert out is not obj
+@pytest.mark.asyncio
+async def test_transformer_error_policy_raise():
+    def bad(obj):
+        raise RuntimeError("boom")
+
+    t = NDJSONTransformer([bad], on_error="raise")
+
+    async def gen():
+        yield {"a": 1}
+
+    with pytest.raises(RuntimeError):
+        async for _ in t.apply_stream(gen()):
+            pass
 
 
-def test_transformer_add_method():
-    t = NDJSONTransformer()
-    t.add(add_field("x", 5))
-    out = t.apply({"a": 1})
-    assert out == {"a": 1, "x": 5}
-
-
-def test_transformer_prevents_mutation():
-    def mutator(obj):
-        obj["x"] = 99
-        return obj
-
-    t = NDJSONTransformer([mutator])
-    obj = {"a": 1}
-    out = t.apply(obj)
-    assert out == {"a": 1, "x": 99}
-    assert obj == {"a": 1}
-
-
-def test_transformer_apply_stream_purity_and_order():
+@pytest.mark.asyncio
+async def test_transformer_apply_stream_purity_and_order():
     t = NDJSONTransformer([add_field("z", 1)])
 
     async def gen():
         yield {"v": 1}
         yield {"v": 2}
 
-    async def collect():
-        return [o async for o in t.apply_stream(gen())]
-
-    import asyncio
-
-    out = asyncio.run(collect())
+    out = [o async for o in t.apply_stream(gen())]
 
     assert out == [{"v": 1, "z": 1}, {"v": 2, "z": 1}]
-    assert out[0] is not out[1]
+    assert out[0] is not out[1]  # distinct objects

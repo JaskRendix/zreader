@@ -17,8 +17,12 @@ ErrorPolicy = Literal["raise", "skip", "log"]
 
 class NDJSONTransformer:
     """
-    Applies a chain of pure transformation functions to NDJSON objects.
-    Each function receives a dict and returns a (new) dict.
+    Applies a chain of transformation functions to NDJSON objects.
+
+    Each transform receives a mutable dict and returns the same dict
+    (after in-place mutation). The transformer guarantees that the input
+    object is shallow-copied exactly once, so user data is never mutated
+    and the pipeline avoids repeated allocations.
 
     Parameters
     ----------
@@ -27,7 +31,7 @@ class NDJSONTransformer:
     on_error:
         What to do when a transform raises:
         - "raise" (default) — propagate the exception immediately.
-        - "skip"            — silently drop the offending object.
+        - "skip"            — drop the offending object silently.
         - "log"             — log a warning and drop the object.
     """
 
@@ -47,16 +51,12 @@ class NDJSONTransformer:
         """
         Apply all transforms to a single object and return the result.
 
-        Always operates on a shallow copy of the input so the original is
-        never mutated. Each transform in the chain receives the output of
-        the previous one.
+        A single shallow copy of the input is created up front. All
+        transform functions mutate this working copy in place, which
+        avoids repeated dict allocations and reduces GC pressure.
         """
-        data: JsonObj = obj.model_dump() if isinstance(obj, BaseModel) else dict(obj)
+        out: JsonObj = obj.model_dump() if isinstance(obj, BaseModel) else dict(obj)
 
-        # Pass the working copy through each transform.  Transform helpers
-        # also copy internally, but we own the initial copy here so helpers
-        # can skip their own defensive copy if needed in the future.
-        out = data
         for fn in self.transforms:
             out = fn(out)
         return out
@@ -67,7 +67,11 @@ class NDJSONTransformer:
     ) -> AsyncIterator[JsonObj]:
         """
         Apply transforms to every object in an async stream.
-        Error handling is governed by the on_error policy.
+
+        Error handling is governed by the on_error policy:
+        - "raise": propagate the exception
+        - "log":   log and drop the object
+        - "skip":  silently drop the object
         """
         async for obj in stream:
             try:
@@ -77,67 +81,72 @@ class NDJSONTransformer:
                     raise
                 if self.on_error == "log":
                     logger.warning("Transform error, dropping object: %s", exc)
-                # "skip" and "log" both drop the object — just don't yield.
+                # "skip" and "log" both drop the object.
 
 
 def rename_field(old: str, new: str) -> TransformFn:
-    """Rename a field. If old is absent the object is returned unchanged."""
+    """
+    Rename a field in place.
+
+    If the field does not exist, the object is returned unchanged.
+    """
 
     def _fn(obj: JsonObj) -> JsonObj:
-        if old not in obj:
-            return obj
-        result = dict(obj)
-        result[new] = result.pop(old)
-        return result
+        if old in obj:
+            obj[new] = obj.pop(old)
+        return obj
 
     return _fn
 
 
 def drop_fields(fields: list[str]) -> TransformFn:
-    """Remove a list of fields. Missing fields are silently ignored."""
+    """
+    Remove a list of fields in place.
+
+    Missing fields are silently ignored.
+    """
 
     def _fn(obj: JsonObj) -> JsonObj:
-        result = dict(obj)
         for f in fields:
-            result.pop(f, None)
-        return result
+            obj.pop(f, None)
+        return obj
 
     return _fn
 
 
 def add_field(name: str, value: Any, *, overwrite: bool = True) -> TransformFn:
     """
-    Add or update a field.
+    Add or update a field in place.
 
     Parameters
     ----------
     name:
-        The field name to set.
+        Field name to set.
     value:
-        The value to assign.
+        Value to assign.
     overwrite:
-        If False, existing values are preserved and no error is raised.
-        Defaults to True (existing values are replaced).
+        If False, existing values are preserved.
     """
 
     def _fn(obj: JsonObj) -> JsonObj:
         if not overwrite and name in obj:
             return obj
-        result = dict(obj)
-        result[name] = value
-        return result
+        obj[name] = value
+        return obj
 
     return _fn
 
 
 def map_field(name: str, fn: Callable[[Any], Any]) -> TransformFn:
-    """Apply fn to the value of field name. If the field is absent, no-op."""
+    """
+    Apply a function to the value of a field in place.
+
+    If the field is absent, the object is returned unchanged.
+    """
 
     def _fn(obj: JsonObj) -> JsonObj:
-        if name not in obj:
-            return obj
-        result = dict(obj)
-        result[name] = fn(result[name])
-        return result
+        if name in obj:
+            obj[name] = fn(obj[name])
+        return obj
 
     return _fn
