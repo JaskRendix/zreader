@@ -10,6 +10,7 @@ Async service for reading and processing compressed NDJSON `.zst` files.
 - Filtering and transformation pipelines
 - Streaming HTTP responses
 - Local file processing
+- Typed `/stats` endpoint with full OpenAPI schema
 - Configurable via environment variables
 
 ## Project layout
@@ -21,10 +22,18 @@ app/api/        — FastAPI routers
 tests/          — full test suite with synthetic .zst fixtures
 ```
 
-## Local usage
+## Installation & local usage
+
+Install in editable mode with test dependencies:
 
 ```bash
-make install   # install in editable mode with test dependencies
+pip install -e .[test]
+```
+
+Or use the Makefile:
+
+```bash
+make install   # install in editable mode with test extras
 make run       # start API on :8000
 make dev       # start API with auto-reload
 make test      # run the full test suite
@@ -50,15 +59,15 @@ asyncio.run(main())
 
 All endpoints accept compressed NDJSON streams (`.zst`).
 
-| Method | Path         | Description                              |
-|--------|--------------|------------------------------------------|
-| POST   | `/upload`    | Upload and validate a `.zst` file        |
-| POST   | `/process`   | Decompress, validate, and return objects |
-| POST   | `/stream`    | Stream decompressed NDJSON line by line  |
-| POST   | `/filter`    | Apply field filters and return matches   |
-| POST   | `/transform` | Apply transformations and return results |
-| GET    | `/stats`     | Processing statistics snapshot           |
-| GET    | `/health`    | Service health check                     |
+| Method | Path         | Description                                 |
+|--------|--------------|---------------------------------------------|
+| POST   | `/upload`    | Upload and validate a `.zst` file           |
+| POST   | `/process`   | Decompress, validate, and return objects    |
+| POST   | `/stream`    | Stream decompressed NDJSON line by line     |
+| POST   | `/filter`    | Apply field filters and return matches      |
+| POST   | `/transform` | Apply transformations and return results    |
+| GET    | `/stats`     | Typed runtime statistics snapshot           |
+| GET    | `/health`    | Service health check                        |
 
 ## Configuration
 
@@ -111,14 +120,24 @@ transformer = NDJSONTransformer(on_error="log")
 
 ## Stats
 
-`StatsService.snapshot()` returns an immutable `StatsSnapshot` safe to
-serialise directly into API responses:
+`StatsService.snapshot()` returns an immutable `StatsSnapshot` object, which is
+returned **directly** by the `/stats` endpoint using a typed Pydantic response
+model (`StatsSnapshotResponse`). This ensures full OpenAPI schema visibility and
+predictable client behavior.
+
+Example:
 
 ```python
 snapshot = stats_service.snapshot()
-# StatsSnapshot(uptime_seconds=4.2, lines_total=500, lines_valid=498,
-#               lines_invalid=2, lines_filtered_out=10, lines_emitted=488,
-#               throughput_lps=116.19)
+# StatsSnapshot(
+#     uptime_seconds=4.2,
+#     lines_total=500,
+#     lines_valid=498,
+#     lines_invalid=2,
+#     lines_filtered_out=10,
+#     lines_emitted=488,
+#     throughput_lps=116.19,
+# )
 ```
 
 ## Docker
