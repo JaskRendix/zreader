@@ -197,3 +197,62 @@ async def test_decompress_lines_unicode_split_across_chunks():
         out.append(line)
     assert all(line == "café" for line in out)
     assert len(out) == 50
+
+
+@pytest.mark.asyncio
+async def test_decompress_stream_trailing_garbage_is_ignored():
+    raw = b"hello"
+    comp = compress(raw)
+    bad = comp + b"THIS_IS_GARBAGE"
+
+    d = AsyncZstdDecompressor()
+    out = []
+    async for chunk in d.decompress_stream(make_stream([bad])):
+        out.append(chunk)
+
+    # Only the first frame is decoded
+    assert "".join(out) == "hello"
+
+
+@pytest.mark.asyncio
+async def test_decompress_stream_multiple_frames_decodes_only_first():
+    comp = compress(b"hello") + compress(b"world")
+
+    d = AsyncZstdDecompressor()
+    out = []
+    async for chunk in d.decompress_stream(make_stream([comp])):
+        out.append(chunk)
+
+    assert "".join(out) == "hello"
+
+
+@pytest.mark.asyncio
+async def test_decompress_stream_unicode_split_across_frames_first_only():
+    part1 = "café".encode("utf-8")[:3]
+    part2 = "café".encode("utf-8")[3:]
+
+    comp = compress(part1) + compress(part2)
+
+    d = AsyncZstdDecompressor()
+    out = []
+    async for chunk in d.decompress_stream(make_stream([comp])):
+        out.append(chunk)
+
+    # Only the first frame is decoded → partial UTF‑8
+    assert "".join(out) == part1.decode("utf-8", errors="ignore")
+
+
+@pytest.mark.asyncio
+async def test_decompress_stream_stress_many_frames_first_only():
+    raw = ("λ" * 10_000).encode("utf-8")
+    comp = b"".join(compress(raw[i : i + 200]) for i in range(0, len(raw), 200))
+
+    chunks = [comp[i : i + 5] for i in range(0, len(comp), 5)]
+
+    d = AsyncZstdDecompressor(chunk_size=128)
+
+    # Because python-zstandard cannot stream multiple frames,
+    # feeding the second frame will raise a ValueError.
+    with pytest.raises(ValueError):
+        async for _ in d.decompress_stream(make_stream(chunks)):
+            pass

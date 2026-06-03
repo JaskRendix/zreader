@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 from typing import AsyncIterator
 
 import zstandard as zstd
@@ -9,6 +10,7 @@ import zstandard as zstd
 class AsyncZstdDecompressor:
     """
     Asynchronous, chunked Zstandard decompressor for streaming NDJSON.
+    Single-frame oriented, with incremental UTF-8 decoding.
     """
 
     def __init__(self, chunk_size: int = 16384) -> None:
@@ -19,25 +21,21 @@ class AsyncZstdDecompressor:
         stream: AsyncIterator[bytes],
     ) -> AsyncIterator[str]:
         """
-        Accepts an async iterator of compressed .zst chunks and yields
-        decompressed text chunks.
+        Accepts an async iterator of compressed .zst chunks and yields decoded
+        UTF-8 text chunks.
 
-        Design notes
-        ------------
-        - The raw decompressed bytes are accumulated in a bytearray and only
-          decoded to str once we have a complete UTF-8 sequence.  Slicing the
-          bytearray at a fixed byte offset can split a multi-byte character,
-          so we decode the whole buffer each iteration and split on character
-          count instead.
-        - zstd's decompressobj raises ZstdError if you call .decompress()
-          after the compressed frame has been fully consumed.  We guard with
-          a try/except so the caller never sees that internal error.
-        - Raises UnicodeDecodeError if the stream is not valid UTF-8.
+        This implementation:
+
+        - uses an incremental UTF-8 decoder so multi-byte characters can span chunks
+        - treats any zstd.ZstdError as corruption and raises ValueError
+        - supports only single-frame .zst streams (python-zstandard limitation)
+        - emits fixed-size character chunks based on chunk_size
         """
         dctx = zstd.ZstdDecompressor()
         decompressor = dctx.decompressobj()
-        raw_buffer = bytearray()
-        text_buffer = ""
+
+        decoder = codecs.getincrementaldecoder("utf-8")()
+        buffer = ""
 
         async for chunk in stream:
             if not chunk:
@@ -46,35 +44,33 @@ class AsyncZstdDecompressor:
             try:
                 out = decompressor.decompress(chunk)
             except zstd.ZstdError as exc:
-                # ZstdError fires both for corrupt data AND for feeding bytes
-                # after a frame has already ended cleanly.  Re-raise only when
-                # we haven't produced any output yet (corrupt input); otherwise
-                # treat it as a normal end-of-stream signal.
-                if not text_buffer and not raw_buffer:
-                    raise
-                break
+                raise ValueError(f"Corrupt zstd stream: {exc}") from exc
 
             if out:
-                raw_buffer.extend(out)
+                text_chunk = decoder.decode(out)
+                if text_chunk:
+                    buffer += text_chunk
 
-            # Decode in one pass to avoid splitting multi-byte characters.
-            if raw_buffer:
-                text_buffer += raw_buffer.decode("utf-8")
-                raw_buffer.clear()
-
-            # Yield complete chunk_size *character* slices.
-            while len(text_buffer) >= self.chunk_size:
-                yield text_buffer[: self.chunk_size]
-                text_buffer = text_buffer[self.chunk_size :]
+            while len(buffer) >= self.chunk_size:
+                yield buffer[: self.chunk_size]
+                buffer = buffer[self.chunk_size :]
 
             await asyncio.sleep(0)
 
-        # Decode any remaining raw bytes from the last iteration.
-        if raw_buffer:
-            text_buffer += raw_buffer.decode("utf-8")
+        # Flush remaining compressed data from zstd
+        try:
+            final_out = decompressor.flush()
+        except zstd.ZstdError as exc:
+            raise ValueError(f"Corrupt zstd stream during flush: {exc}") from exc
 
-        if text_buffer:
-            yield text_buffer
+        if final_out:
+            buffer += decoder.decode(final_out)
+
+        # Flush any remaining partial UTF-8 sequence
+        buffer += decoder.decode(b"", final=True)
+
+        if buffer:
+            yield buffer
 
     async def decompress_lines(
         self,
@@ -82,15 +78,20 @@ class AsyncZstdDecompressor:
     ) -> AsyncIterator[str]:
         """
         High-level interface: yields complete NDJSON lines one by one.
-        Delegates to decompress_stream so chunking logic lives in one place.
+        Uses a rolling 'pending' fragment to avoid O(N^2) re-slicing.
         """
-        buffer = ""
+        pending = ""
+
         async for chunk in self.decompress_stream(stream):
-            buffer += chunk
-            while "\n" in buffer:
-                line, buffer = buffer.split("\n", 1)
+            if not chunk:
+                continue
+
+            combined = pending + chunk
+            lines = combined.split("\n")
+            pending = lines.pop()
+
+            for line in lines:
                 yield line
 
-        # Yield any trailing content with no terminating newline.
-        if buffer:
-            yield buffer
+        if pending:
+            yield pending
