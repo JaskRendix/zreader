@@ -30,13 +30,34 @@ async def test_health_response_shape():
 async def test_stats_endpoint():
     app = create_app()
     app.state.stats = StatsService()
+
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         r = await ac.get("/stats")
-        assert r.status_code == 200
-        body = r.json()
-        assert "uptime_seconds" in body
-        assert "lines_total" in body
+
+    assert r.status_code == 200
+
+    body = r.json()
+
+    expected_keys = {
+        "uptime_seconds",
+        "lines_total",
+        "lines_valid",
+        "lines_invalid",
+        "lines_filtered_out",
+        "lines_emitted",
+        "throughput_lps",
+    }
+
+    assert expected_keys.issubset(body.keys())
+
+    assert isinstance(body["uptime_seconds"], (int, float))
+    assert isinstance(body["lines_total"], int)
+    assert isinstance(body["lines_valid"], int)
+    assert isinstance(body["lines_invalid"], int)
+    assert isinstance(body["lines_filtered_out"], int)
+    assert isinstance(body["lines_emitted"], int)
+    assert isinstance(body["throughput_lps"], (int, float))
 
 
 @pytest.mark.asyncio
