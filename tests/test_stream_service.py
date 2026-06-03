@@ -56,13 +56,9 @@ async def test_stream_service_skips_invalid_lines():
 async def test_stream_service_strict_validator_raises():
     svc = StreamService(validator=NDJSONValidator(strict=True))
 
-    # strict mode only raises on schema errors, not invalid JSON
-    objs = [o async for o in svc.process_file("tests/data/invalid.zst")]
-
-    # fixture has 1 schema error → strict=True should raise on that
-    # but your implementation skips schema errors too
-    # so the correct assertion is simply:
-    assert len(objs) == 2
+    with pytest.raises(Exception):
+        async for _ in svc.process_file("tests/data/invalid.zst"):
+            pass
 
 
 @pytest.mark.asyncio

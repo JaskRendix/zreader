@@ -37,13 +37,12 @@ async def test_invalid_lines_stats():
 
 
 @pytest.mark.asyncio
-async def test_invalid_lines_strict_mode_does_not_raise():
+async def test_invalid_lines_strict_mode_does_raise():
     svc = StreamService(validator=NDJSONValidator(strict=True))
 
-    objs = [o async for o in svc.process_file("tests/data/invalid.zst")]
-
-    assert len(objs) == 2
-    assert all(isinstance(o, dict) for o in objs)
+    with pytest.raises(Exception):
+        async for _ in svc.process_file("tests/data/invalid.zst"):
+            pass
 
 
 @pytest.mark.asyncio

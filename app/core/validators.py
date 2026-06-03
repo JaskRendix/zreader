@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, AsyncIterator, TypeVar
 
 from pydantic import RootModel, ValidationError
@@ -21,7 +20,14 @@ class NDJSONRecord(RootModel[dict[str, Any]]):
 
 @dataclass
 class ValidationStats:
-    """Running counters for a validate_stream pass."""
+    """
+    Per-stream counters for NDJSON validation.
+
+    valid:          number of successfully parsed and schema-valid lines
+    invalid_json:   lines that fail JSON syntax parsing
+    schema_errors:  lines that are valid JSON but fail schema validation
+    empty:          blank or whitespace-only lines
+    """
 
     valid: int = 0
     invalid_json: int = 0
@@ -34,21 +40,22 @@ class ValidationStats:
 
 
 class ValidationError_(Exception):
-    """Raised by validate() in strict mode when a line cannot be parsed."""
+    """Raised in strict mode when a line cannot be parsed or validated."""
 
 
 class NDJSONValidator:
     """
-    Validates NDJSON lines using a Pydantic RootModel.
+    High-throughput NDJSON validator using a Pydantic RootModel.
 
-    Parameters
-    ----------
-    model:
-        A RootModel subclass used to validate each line.
-        Defaults to NDJSONRecord (accepts any JSON object).
-    strict:
-        If True, validate() raises on malformed JSON or schema violations
-        instead of returning None. Useful for fail-fast pipelines.
+    This implementation performs **single-pass** validation using
+    `model_validate_json()`, which handles both JSON parsing and schema
+    validation inside Pydantic's Rust engine.
+
+    Features:
+    - Single-pass parsing (no json.loads double-work)
+    - Optional strict mode (fail-fast)
+    - Per-stream stats isolation for concurrency safety
+    - Unified validation logic for both single-line and streaming use
     """
 
     def __init__(
@@ -58,67 +65,80 @@ class NDJSONValidator:
     ) -> None:
         self.model = model
         self.strict = strict
+        self._fallback_stats = ValidationStats()
 
-    def validate(self, raw_line: str) -> dict[str, Any] | None:
+    @property
+    def stats(self) -> ValidationStats:
+        """
+        Backwards-compatible accessor for stats.
+
+        For streaming validation, a dedicated stats object is passed
+        explicitly to avoid cross-request contamination.
+        """
+        return self._fallback_stats
+
+    def validate(
+        self,
+        raw_line: str,
+        stats_accumulator: ValidationStats | None = None,
+    ) -> dict[str, Any] | None:
         """
         Validate a single NDJSON line.
 
-        Returns the parsed dict on success.
-        Returns None for blank lines (expected, not an error).
-        Returns None for invalid lines when strict=False.
-        Raises ValidationError_ for invalid lines when strict=True,
-        distinguishing json.JSONDecodeError (malformed) from
-        pydantic.ValidationError (schema mismatch).
+        - Blank lines increment `empty` and return None.
+        - Malformed JSON increments `invalid_json`.
+        - Schema-invalid JSON increments `schema_errors`.
+        - In strict mode, malformed or schema-invalid lines raise ValidationError_.
+        - On success, returns the parsed dict.
         """
-        if not raw_line.strip():
+        stats = (
+            stats_accumulator if stats_accumulator is not None else self._fallback_stats
+        )
+
+        if not raw_line or not raw_line.strip():
+            stats.empty += 1
             return None
 
-        # First check: is it valid JSON at all?
-        try:
-            json.loads(raw_line)
-        except json.JSONDecodeError as exc:
-            if self.strict:
-                raise ValidationError_(f"Invalid JSON: {exc}") from exc
-            return None
-
-        # Second check: does it match the schema?
         try:
             record = self.model.model_validate_json(raw_line)
+            stats.valid += 1
             return record.root  # type: ignore[attr-defined]
+
         except ValidationError as exc:
-            if self.strict:
-                raise ValidationError_(f"Schema error: {exc}") from exc
+            # Distinguish JSON syntax errors from schema errors
+            is_json_syntax_error = any(
+                "json_invalid" in err.get("type", "") for err in exc.errors()
+            )
+
+            if is_json_syntax_error:
+                stats.invalid_json += 1
+                if self.strict:
+                    raise ValidationError_(f"Invalid JSON: {exc}") from exc
+                logger.warning("Skipping malformed JSON line: %.120s", raw_line)
+            else:
+                stats.schema_errors += 1
+                if self.strict:
+                    raise ValidationError_(f"Schema error: {exc}") from exc
+                logger.warning("Skipping line failing schema validation: %s", exc)
+
             return None
 
     async def validate_stream(
         self,
         lines: AsyncIterator[str],
+        stats: ValidationStats | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """
-        Validate an async stream of raw NDJSON lines.
+        Validate an async NDJSON line stream.
 
-        Yields only valid dicts. Invalid and empty lines are counted and
-        logged; access .stats after (or during) iteration for observability.
+        - Uses a per-stream ValidationStats instance for concurrency safety.
+        - Delegates all validation to `validate()` to keep logic DRY.
+        - Yields only valid dicts; invalid lines are logged and counted.
         """
-        self.stats = ValidationStats()
+        stream_stats = stats if stats is not None else ValidationStats()
+        self._fallback_stats = stream_stats  # backwards compatibility
 
         async for line in lines:
-            if not line.strip():
-                self.stats.empty += 1
-                continue
-
-            # Separate JSON parse errors from schema errors for clearer logs.
-            try:
-                json.loads(line)
-            except json.JSONDecodeError:
-                self.stats.invalid_json += 1
-                logger.warning("Skipping malformed JSON line: %.120s", line)
-                continue
-
-            try:
-                record = self.model.model_validate_json(line)
-                self.stats.valid += 1
-                yield record.root  # type: ignore[attr-defined]
-            except ValidationError as exc:
-                self.stats.schema_errors += 1
-                logger.warning("Skipping line failing schema validation: %s", exc)
+            validated = self.validate(line, stats_accumulator=stream_stats)
+            if validated is not None:
+                yield validated
