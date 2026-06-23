@@ -19,6 +19,7 @@ dependencies = [
 test = [
     "pytest",
     "pytest-asyncio",
+    "pytest-cov",
     "httpx",
 ]
 
@@ -29,3 +30,6 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["app*"]
+
+[tool.pytest.ini_options]
+addopts = "--cov=app --cov-report=term-missing"
